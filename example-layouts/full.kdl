@@ -1,0 +1,79 @@
+// Full example layout — copy this and adapt to your workflow.
+//
+// Keybinds must be added to your Zellij config (config.kdl), NOT here.
+// See docs/README.md for the keybind block to paste.
+//
+// Pane naming rules:
+//   - The `name` field sets the pane's initial title in Zellij.
+//   - The plugin matches panes by their title on first startup.
+//   - If your application overwrites the terminal title, the plugin detects
+//     the pane during the first PaneUpdate (before the title changes).
+//     This is reliable for preloaded and lazy panes alike.
+
+layout {
+    tab name="dev" hide_floating_panes=true {
+        // ── Main workspace panes ────────────────────────────────────────────
+        pane split_direction="vertical" {
+            // Primary editor (helix)
+            pane command="hx" name="editor" {
+                args "."
+            }
+            // Compiler output / test runner, fixed at bottom
+            pane command="bash" size=10 name="build" {
+                args "-c" "echo 'Build pane ready. Run: cargo test, cargo run, etc.'"
+            }
+        }
+
+        // ── Floating managed panes ──────────────────────────────────────────
+        //
+        // Geometry: x/y are offsets from top-left of the Zellij window.
+        // Use percentages for responsive layouts.
+        //
+        floating_panes {
+            // File manager — right column, top half
+            // Preloaded: starts immediately, stays hidden until Alt+b
+            pane command="broot" name="broot" {
+                x "60%" y "0%" width "40%" height "60%"
+            }
+
+            // Claude Code AI assistant — large centered overlay
+            // Lazy (start_suspended): process spawns only on first Alt+c press.
+            // The native "press Enter to rerun" prompt handles process restarts.
+            pane command="claude" name="claude" start_suspended=true {
+                x "15%" y "5%" width "70%" height "90%"
+            }
+
+            // General-purpose terminal — bottom strip
+            // Preloaded plain shell
+            pane name="terminal" {
+                x "0%" y "60%" width "100%" height "40%"
+            }
+
+            // Git UI — optional, lazy-loaded
+            // Uncomment to enable; add a pane_3_* entry in the plugin block
+            // and a corresponding keybind (e.g. Alt g) in config.kdl.
+            // pane command="lazygit" name="lazygit" start_suspended=true {
+            //     x "10%" y "5%" width "80%" height "90%"
+            // }
+        }
+
+        // ── Plugin control pane ─────────────────────────────────────────────
+        //
+        // size=1 borderless=true makes it effectively invisible.
+        // The full pane list must be present here AND in every keybind block
+        // so that state is consistent when LaunchOrFocusPlugin re-calls load().
+        //
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                pane_0_name "broot"
+                pane_0_key "Alt b"
+                pane_1_name "claude"
+                pane_1_key "Alt c"
+                pane_2_name "terminal"
+                pane_2_key "Alt t"
+                // pane_3_name "lazygit"
+                // pane_3_key "Alt g"
+            }
+        }
+    }
+}

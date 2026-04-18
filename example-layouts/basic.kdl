@@ -1,0 +1,39 @@
+// Minimal working layout: terminal + broot + claude code
+// Adjust plugin path and pane commands for your system.
+layout {
+    tab name="dev" hide_floating_panes=true {
+        // Main editor pane
+        pane command="hx" name="editor" {
+            args "."
+        }
+
+        floating_panes {
+            // Preloaded: process starts immediately, hidden until triggered
+            pane command="broot" name="broot" {
+                x "60%" y "0%" width "40%" height "60%"
+            }
+
+            // Lazy: process only starts on first keybind trigger
+            pane command="claude" name="claude" start_suspended=true {
+                x "15%" y "5%" width "70%" height "90%"
+            }
+
+            // Plain shell, preloaded
+            pane name="terminal" {
+                x "0%" y "60%" width "100%" height "40%"
+            }
+        }
+
+        // Headless plugin pane — takes one invisible row
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                pane_0_name "broot"
+                pane_0_key "Alt b"
+                pane_1_name "claude"
+                pane_1_key "Alt c"
+                pane_2_name "terminal"
+                pane_2_key "Alt t"
+            }
+        }
+    }
+}

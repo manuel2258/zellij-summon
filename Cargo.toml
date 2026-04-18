@@ -1,0 +1,20 @@
+[package]
+name = "zellij-pane-manager"
+version = "0.1.0"
+edition = "2021"
+description = "Headless Zellij plugin for keybind-driven floating pane management"
+license = "MIT"
+repository = "https://github.com/manuel2258/zellij-summon"
+autobins = false
+
+[lib]
+path = "src/main.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+zellij-tile = "0.42"
+
+[profile.release]
+lto = true
+opt-level = "s"
+strip = "symbols"
