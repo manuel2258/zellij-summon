@@ -36,8 +36,9 @@ jobs:
 
       - name: Rename artifact
         run: |
-          cp target/wasm32-wasip1/release/zellij_pane_manager.wasm \
-             zellij-pane-manager.wasm
+          find target/wasm32-wasip1/release -maxdepth 1 -name '*.wasm' \
+            -exec cp {} zellij-pane-manager.wasm \;
+          test -f zellij-pane-manager.wasm
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

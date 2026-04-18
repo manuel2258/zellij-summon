@@ -1,20 +1,26 @@
-{ pkgs ? import <nixpkgs> {} }:
+# Build the zellij-pane-manager.wasm plugin.
+#
+# Callers must supply a `rustPlatform` whose Rust toolchain includes the
+# `wasm32-wasip1` target.  With oxalica/rust-overlay:
+#
+#   let
+#     rust = pkgs.rust-bin.stable.latest.default.override {
+#       targets = [ "wasm32-wasip1" ];
+#     };
+#     rustPlatform = pkgs.makeRustPlatform { cargo = rust; rustc = rust; };
+#   in pkgs.callPackage ./nix/default.nix { inherit rustPlatform; }
+#
+# Without an overlay, `pkgs.rustPlatform` is used but the build will fail if
+# the default nixpkgs Rust toolchain does not include `wasm32-wasip1`.
+{ pkgs ? import <nixpkgs> {}, rustPlatform ? pkgs.rustPlatform }:
 
-pkgs.rustPlatform.buildRustPackage {
+rustPlatform.buildRustPackage {
   pname = "zellij-pane-manager";
   version = "0.1.0";
 
   src = ../.;
   cargoLock.lockFile = ../Cargo.lock;
 
-  nativeBuildInputs = with pkgs; [
-    # rust-bin provides the wasm32-wasip1 target; adjust if using rustup overlay
-    (rust-bin.stable.latest.default.override {
-      targets = [ "wasm32-wasip1" ];
-    })
-  ];
-
-  # Disable the default host-native build and switch to wasm target
   buildPhase = ''
     cargo build --release --target wasm32-wasip1
   '';

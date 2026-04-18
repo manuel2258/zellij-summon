@@ -17,8 +17,6 @@ register_plugin!(State);
 struct State {
     /// pane name → runtime PaneId; built lazily from PaneUpdate events
     pane_map: HashMap<String, PaneId>,
-    /// pane name → latest PaneInfo snapshot
-    pane_info: HashMap<String, PaneInfo>,
     /// ordered list of managed pane names, parsed from plugin config
     managed_panes: Vec<String>,
     /// which managed pane is currently visible (if any)
@@ -54,6 +52,18 @@ impl ZellijPlugin for State {
             }
         }
         self.managed_panes = managed;
+
+        // Prune stale entries left over from a previous config (rename, removal).
+        // Clone to avoid borrow conflict between managed_panes and the maps.
+        let current = self.managed_panes.clone();
+        self.pane_map.retain(|name, _| current.contains(name));
+        self.pinned_panes.retain(|name| current.contains(name));
+        if let Some(ref name) = self.shown_pane.clone() {
+            if !current.contains(name) {
+                self.shown_pane = None;
+            }
+        }
+
         self.pending_target = configuration.get("target").cloned();
 
         if !self.initialized {
@@ -96,25 +106,32 @@ impl ZellijPlugin for State {
 }
 
 impl State {
-    /// Refresh pane_map and pane_info from a fresh PaneManifest.
+    /// Refresh pane_map from a fresh PaneManifest.
     ///
-    /// Already-discovered panes are identified by their PaneId so that title
-    /// changes (e.g. broot updating the terminal title) don't lose tracking.
-    /// Newly-seen managed panes are matched by their current title against the
-    /// configured name — this succeeds on the first PaneUpdate after startup
-    /// when the title still matches the layout `name` field.
+    /// Lifecycle:
+    /// 1. Remove entries for panes no longer present in any tab (externally closed).
+    ///    If the closed pane was shown/pinned, that state is cleared too.
+    /// 2. Discover panes not yet mapped by matching their current title to a
+    ///    configured managed-pane name — succeeds on the first PaneUpdate after
+    ///    startup when the title still matches the layout `name` field.
+    ///    After first discovery, panes are tracked by PaneId so title changes
+    ///    (e.g. broot updating the terminal title) don't lose the mapping.
     fn rebuild_pane_map(&mut self, manifest: PaneManifest) {
         let all_panes: Vec<PaneInfo> = manifest.panes.into_values().flatten().collect();
 
-        // Update info snapshots for panes we already know by ID
-        for pane in &all_panes {
-            let mapped_name = self
-                .pane_map
-                .iter()
-                .find(|(_, &pid)| pane_id_matches(pid, pane))
-                .map(|(name, _)| name.clone());
-            if let Some(name) = mapped_name {
-                self.pane_info.insert(name, pane.clone());
+        // Remove entries for panes that no longer appear in the manifest
+        let live_ids: HashSet<u32> = all_panes.iter().map(|p| p.id).collect();
+        self.pane_map.retain(|_, pid| {
+            let id = match *pid {
+                PaneId::Terminal(id) | PaneId::Plugin(id) => id,
+            };
+            live_ids.contains(&id)
+        });
+        // Clear shown/pinned state for any pane that was just evicted
+        if let Some(ref name) = self.shown_pane.clone() {
+            if !self.pane_map.contains_key(name) {
+                self.shown_pane = None;
+                self.pinned_panes.remove(name);
             }
         }
 
@@ -129,9 +146,7 @@ impl State {
 
         for name in unmapped {
             if let Some(pane) = all_panes.iter().find(|p| p.title == name) {
-                let pid = make_pane_id(pane);
-                self.pane_map.insert(name.clone(), pid);
-                self.pane_info.insert(name, pane.clone());
+                self.pane_map.insert(name, make_pane_id(pane));
             }
         }
     }
@@ -369,27 +384,41 @@ mod tests {
         s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot")]));
 
         assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
-        assert_eq!(s.pane_info.get("broot").map(|p| p.id), Some(42));
     }
     // Breaking mutation: change `p.title == name` to `p.title == "nonexistent"` →
-    // nothing is inserted into pane_map, first assertion fails.
+    // nothing is inserted into pane_map, assertion fails.
 
     #[test]
-    fn rebuild_tracks_pane_by_id_after_title_change() {
+    fn rebuild_pane_map_is_stable_after_title_change() {
         // Once a pane is in pane_map, its entry is preserved even if the terminal
-        // application overwrites the pane title.  pane_info is updated to the new snapshot.
+        // application overwrites the pane title — tracking is by PaneId, not title.
         let mut s = state_with_pane("broot", 42);
 
         // Same numeric id, but title now shows the current working directory
         s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot - /home/user")]));
 
-        assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42))); // ID stable
-        assert_eq!(
-            s.pane_info.get("broot").map(|p| p.title.as_str()),
-            Some("broot - /home/user") // info snapshot updated
-        );
+        assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
     }
-    // Breaking mutation: remove the "Update info snapshots for already-mapped panes"
-    // loop in rebuild_pane_map → pane_info is never refreshed for known panes,
-    // second assertion fails.
+    // Breaking mutation: add `self.pane_map.clear()` at the start of rebuild_pane_map →
+    // pane_map is empty after rebuild; discovery fails (title no longer matches "broot"),
+    // so assertion fails.
+
+    #[test]
+    fn rebuild_removes_closed_pane_and_clears_shown_state() {
+        // When a pane disappears from the manifest (user closed it with Ctrl+q),
+        // its entry must be evicted and shown/pinned state must be cleared to
+        // avoid the plugin getting stuck believing a dead pane is still visible.
+        let mut s = state_with_pane("broot", 42);
+        s.shown_pane = Some("broot".to_string());
+        s.pinned_panes.insert("broot".to_string());
+
+        // Manifest arrives with id=42 absent — pane was externally closed
+        s.rebuild_pane_map(make_manifest(vec![]));
+
+        assert!(!s.pane_map.contains_key("broot"));
+        assert!(s.shown_pane.is_none());
+        assert!(!s.pinned_panes.contains("broot"));
+    }
+    // Breaking mutation: remove the `self.pane_map.retain(...)` stale-cleanup block →
+    // pane_map still contains "broot" after rebuild, first assertion fails.
 }
