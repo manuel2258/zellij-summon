@@ -31,6 +31,14 @@ struct State {
     initialized: bool,
 }
 
+/// A side-effect that process_target_actions wants to produce.
+/// The dispatcher (process_target) translates these into real shim calls.
+#[derive(Debug, PartialEq)]
+pub enum PaneAction {
+    Show(PaneId),
+    Hide(PaneId),
+}
+
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
         // Parse the ordered managed-pane list from config keys pane_0_name, pane_1_name, …
@@ -128,19 +136,20 @@ impl State {
         }
     }
 
-    /// Core state-machine logic for a keybind trigger naming `target`.
+    /// Pure state-machine core: computes which pane API calls are needed for a
+    /// keybind trigger and mutates `self` accordingly. Returns the actions in
+    /// dispatch order; the caller is responsible for executing them.
     ///
     /// State transitions:
     ///   HIDDEN            → (trigger) → SHOWN unpinned
     ///   SHOWN unpinned    → (trigger) → SHOWN pinned
     ///   SHOWN pinned      → (trigger) → HIDDEN
     ///   SHOWN (any state) → (other)   → HIDDEN; other pane → SHOWN unpinned
-    fn process_target(&mut self, target: &str) {
+    fn process_target_actions(&mut self, target: &str) -> Vec<PaneAction> {
+        let mut actions = Vec::new();
+
         if !self.pane_map.contains_key(target) {
-            // Target pane not yet discovered — ignore; will retry on next PaneUpdate
-            // if pending_target is still set. Since we already took it, the user
-            // must press the keybind again. Acceptable for first-trigger edge case.
-            return;
+            return actions;
         }
 
         // Triggering the same pane that's already shown
@@ -149,28 +158,41 @@ impl State {
             let pid = *self.pane_map.get(target).unwrap();
             if is_pinned {
                 // SHOWN pinned → HIDDEN
-                hide_pane_with_id(pid);
+                actions.push(PaneAction::Hide(pid));
                 self.pinned_panes.remove(target);
                 self.shown_pane = None;
             } else {
                 // SHOWN unpinned → SHOWN pinned (no Zellij pin API; tracked internally)
                 self.pinned_panes.insert(target.to_string());
             }
-            return;
+            return actions;
         }
 
         // Triggering a different pane — hide the current one first
         if let Some(shown) = self.shown_pane.take() {
             if let Some(shown_pid) = self.pane_map.get(&shown).copied() {
-                hide_pane_with_id(shown_pid);
+                actions.push(PaneAction::Hide(shown_pid));
             }
             self.pinned_panes.remove(&shown);
         }
 
         // Show target pane (always starts unpinned); float it if it was embedded
         let target_pid = *self.pane_map.get(target).unwrap();
-        show_pane_with_id(target_pid, true);
+        actions.push(PaneAction::Show(target_pid));
         self.shown_pane = Some(target.to_string());
+
+        actions
+    }
+
+    /// Dispatch the actions returned by process_target_actions to the Zellij shim.
+    /// This is the only place shim functions are called for pane visibility.
+    fn process_target(&mut self, target: &str) {
+        for action in self.process_target_actions(target) {
+            match action {
+                PaneAction::Hide(pid) => hide_pane_with_id(pid),
+                PaneAction::Show(pid) => show_pane_with_id(pid, true),
+            }
+        }
     }
 }
 
@@ -187,4 +209,187 @@ fn make_pane_id(pane: &PaneInfo) -> PaneId {
     } else {
         PaneId::Terminal(pane.id)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    /// Build a PaneInfo with only the semantically relevant fields set.
+    /// PaneInfo derives Default (zellij-utils 0.42.2), so struct update syntax
+    /// insulates tests from future field additions.
+    fn make_pane(id: u32, is_plugin: bool, title: &str) -> PaneInfo {
+        PaneInfo {
+            id,
+            is_plugin,
+            title: title.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Wrap a flat list of panes into a PaneManifest under tab index 0.
+    fn make_manifest(panes: Vec<PaneInfo>) -> PaneManifest {
+        PaneManifest {
+            panes: HashMap::from([(0usize, panes)]),
+        }
+    }
+
+    /// A State that already knows about one pane by name→ID.
+    /// Nothing is shown; nothing is pinned.
+    fn state_with_pane(name: &str, id: u32) -> State {
+        let mut s = State::default();
+        s.managed_panes = vec![name.to_string()];
+        s.pane_map.insert(name.to_string(), PaneId::Terminal(id));
+        s
+    }
+
+    // ── process_target_actions tests ─────────────────────────────────────────
+
+    #[test]
+    fn first_trigger_shows_pane() {
+        // HIDDEN → SHOWN unpinned
+        let mut s = state_with_pane("term", 1);
+
+        let actions = s.process_target_actions("term");
+
+        assert_eq!(actions, vec![PaneAction::Show(PaneId::Terminal(1))]);
+        assert_eq!(s.shown_pane.as_deref(), Some("term"));
+        assert!(!s.pinned_panes.contains("term"));
+    }
+    // Breaking mutation: remove `actions.push(PaneAction::Show(target_pid))` →
+    // actions vec is empty, first assertion fails.
+
+    #[test]
+    fn second_trigger_pins_pane() {
+        // SHOWN unpinned → SHOWN pinned (no shim call — purely internal state)
+        let mut s = state_with_pane("term", 1);
+        s.shown_pane = Some("term".to_string());
+
+        let actions = s.process_target_actions("term");
+
+        assert!(actions.is_empty());
+        assert!(s.pinned_panes.contains("term"));
+        assert_eq!(s.shown_pane.as_deref(), Some("term")); // still shown
+    }
+    // Breaking mutation: remove `self.pinned_panes.insert(target.to_string())` →
+    // pinned_panes stays empty, second assertion fails.
+
+    #[test]
+    fn third_trigger_hides_pinned_pane() {
+        // SHOWN pinned → HIDDEN
+        let mut s = state_with_pane("term", 1);
+        s.shown_pane = Some("term".to_string());
+        s.pinned_panes.insert("term".to_string());
+
+        let actions = s.process_target_actions("term");
+
+        assert_eq!(actions, vec![PaneAction::Hide(PaneId::Terminal(1))]);
+        assert!(s.shown_pane.is_none());
+        assert!(!s.pinned_panes.contains("term"));
+    }
+    // Breaking mutation: change `self.shown_pane = None` to
+    // `self.shown_pane = Some(target.to_string())` → shown_pane is not cleared,
+    // second assertion fails.
+
+    #[test]
+    fn switch_panes_hides_current_shows_new() {
+        // Triggering a different pane: hide old (unpinned), show new.
+        // Order of actions is significant — hide before show.
+        let mut s = State::default();
+        s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
+        s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
+        s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
+        s.shown_pane = Some("alpha".to_string());
+
+        let actions = s.process_target_actions("beta");
+
+        assert_eq!(
+            actions,
+            vec![
+                PaneAction::Hide(PaneId::Terminal(10)),
+                PaneAction::Show(PaneId::Terminal(20)),
+            ]
+        );
+        assert_eq!(s.shown_pane.as_deref(), Some("beta"));
+    }
+    // Breaking mutation: remove `actions.push(PaneAction::Hide(shown_pid))` →
+    // actions is [Show(20)] only, equality assertion fails.
+
+    #[test]
+    fn switch_from_pinned_clears_pin_hides_old_shows_new() {
+        // A pinned pane must be unpinned (internally) when a different pane is triggered.
+        let mut s = State::default();
+        s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
+        s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
+        s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
+        s.shown_pane = Some("alpha".to_string());
+        s.pinned_panes.insert("alpha".to_string());
+
+        let actions = s.process_target_actions("beta");
+
+        assert_eq!(
+            actions,
+            vec![
+                PaneAction::Hide(PaneId::Terminal(10)),
+                PaneAction::Show(PaneId::Terminal(20)),
+            ]
+        );
+        assert_eq!(s.shown_pane.as_deref(), Some("beta"));
+        assert!(!s.pinned_panes.contains("alpha")); // pin cleared on switch
+    }
+    // Breaking mutation: remove `self.pinned_panes.remove(&shown)` in the switch
+    // branch → "alpha" remains in pinned_panes after switching, last assertion fails.
+
+    #[test]
+    fn unknown_target_is_noop() {
+        // A target not in pane_map must leave all state unchanged.
+        let mut s = state_with_pane("known", 1);
+        s.shown_pane = Some("known".to_string());
+
+        let actions = s.process_target_actions("ghost");
+
+        assert!(actions.is_empty());
+        assert_eq!(s.shown_pane.as_deref(), Some("known")); // untouched
+    }
+    // Breaking mutation: remove the early-return guard
+    // `if !self.pane_map.contains_key(target) { return actions; }` →
+    // execution reaches `self.pane_map.get(target).unwrap()` and panics.
+
+    // ── rebuild_pane_map tests ───────────────────────────────────────────────
+
+    #[test]
+    fn rebuild_discovers_pane_by_title() {
+        // An unmapped managed pane is found by matching its title in the manifest.
+        let mut s = State::default();
+        s.managed_panes = vec!["broot".to_string()];
+
+        s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot")]));
+
+        assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
+        assert_eq!(s.pane_info.get("broot").map(|p| p.id), Some(42));
+    }
+    // Breaking mutation: change `p.title == name` to `p.title == "nonexistent"` →
+    // nothing is inserted into pane_map, first assertion fails.
+
+    #[test]
+    fn rebuild_tracks_pane_by_id_after_title_change() {
+        // Once a pane is in pane_map, its entry is preserved even if the terminal
+        // application overwrites the pane title.  pane_info is updated to the new snapshot.
+        let mut s = state_with_pane("broot", 42);
+
+        // Same numeric id, but title now shows the current working directory
+        s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot - /home/user")]));
+
+        assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42))); // ID stable
+        assert_eq!(
+            s.pane_info.get("broot").map(|p| p.title.as_str()),
+            Some("broot - /home/user") // info snapshot updated
+        );
+    }
+    // Breaking mutation: remove the "Update info snapshots for already-mapped panes"
+    // loop in rebuild_pane_map → pane_info is never refreshed for known panes,
+    // second assertion fails.
 }
