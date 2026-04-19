@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   release:
-    name: Version bump, tag, and publish
+    name: Tag and publish release
     runs-on: ubuntu-latest
 
     steps:
@@ -103,23 +103,17 @@ jobs:
             -exec cp {} zellij-pane-manager.wasm \;
           test -f zellij-pane-manager.wasm
 
-      - name: Commit version bump
+      # Tag the current HEAD directly — no version-bump commit is pushed back
+      # to main.  Pushing commits to a protected branch requires a PAT with
+      # bypass permissions; tagging HEAD avoids that requirement entirely and
+      # keeps the release commit identical to the merged PR commit.
+      - name: Create tag and push
         if: steps.guard.outputs.skip == 'false'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
-          if git diff --cached --quiet; then
-            echo "ERROR: Cargo.toml unchanged after version bump — aborting."
-            exit 1
-          fi
-          git commit -m "chore: release ${{ steps.tag.outputs.new_tag }}"
-
-      - name: Create tag and push
-        if: steps.guard.outputs.skip == 'false'
-        run: |
           git tag -a "${{ steps.tag.outputs.new_tag }}" -m "Release ${{ steps.tag.outputs.new_tag }}"
-          git push origin HEAD:main "${{ steps.tag.outputs.new_tag }}"
+          git push origin "${{ steps.tag.outputs.new_tag }}"
 
       - name: Create GitHub Release
         if: steps.guard.outputs.skip == 'false'
