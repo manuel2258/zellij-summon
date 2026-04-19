@@ -42,14 +42,9 @@ impl ZellijPlugin for State {
         // Parse the ordered managed-pane list from config keys pane_0_name, pane_1_name, …
         let mut managed = Vec::new();
         let mut i = 0;
-        loop {
-            match configuration.get(&format!("pane_{i}_name")) {
-                Some(name) => {
-                    managed.push(name.clone());
-                    i += 1;
-                }
-                None => break,
-            }
+        while let Some(name) = configuration.get(&format!("pane_{i}_name")) {
+            managed.push(name.clone());
+            i += 1;
         }
         self.managed_panes = managed;
 
@@ -208,13 +203,6 @@ impl State {
                 PaneAction::Show(pid) => show_pane_with_id(pid, true),
             }
         }
-    }
-}
-
-fn pane_id_matches(pid: PaneId, pane: &PaneInfo) -> bool {
-    match pid {
-        PaneId::Terminal(id) => id == pane.id && !pane.is_plugin,
-        PaneId::Plugin(id) => id == pane.id && pane.is_plugin,
     }
 }
 
@@ -395,7 +383,11 @@ mod tests {
         let mut s = state_with_pane("broot", 42);
 
         // Same numeric id, but title now shows the current working directory
-        s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot - /home/user")]));
+        s.rebuild_pane_map(make_manifest(vec![make_pane(
+            42,
+            false,
+            "broot - /home/user",
+        )]));
 
         assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
     }

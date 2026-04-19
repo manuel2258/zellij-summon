@@ -1,4 +1,9 @@
 name: Release
+# Manual release fallback.
+# Auto-releases on push to main are handled by auto-release.yml.
+# This workflow fires when a v* tag is pushed manually (e.g. hotfix or re-release).
+# Note: tags created by auto-release.yml do NOT trigger this workflow
+# (GITHUB_TOKEN limitation — by design).
 
 on:
   push:
@@ -32,7 +37,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release --target wasm32-wasip1
+        run: cargo build --release --locked --target wasm32-wasip1
 
       - name: Rename artifact
         run: |
