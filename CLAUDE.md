@@ -18,3 +18,14 @@ The commit type determines the semver version bump, so using the correct prefix 
 it will still trigger a patch release but makes the changelog unreadable.
 
 Keep the subject line under 72 characters. No trailing period.
+
+## Before Committing
+
+CI enforces formatting and linting. Run these two commands and fix any issues before committing:
+
+```bash
+cargo fmt
+cargo clippy --target wasm32-wasip1 -- -D warnings
+```
+
+`cargo fmt` rewrites files in place. `cargo clippy` must exit with no warnings (they are treated as errors). Do not commit code that fails either check.
