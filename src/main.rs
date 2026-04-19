@@ -42,14 +42,9 @@ impl ZellijPlugin for State {
         // Parse the ordered managed-pane list from config keys pane_0_name, pane_1_name, …
         let mut managed = Vec::new();
         let mut i = 0;
-        loop {
-            match configuration.get(&format!("pane_{i}_name")) {
-                Some(name) => {
-                    managed.push(name.clone());
-                    i += 1;
-                }
-                None => break,
-            }
+        while let Some(name) = configuration.get(&format!("pane_{i}_name")) {
+            managed.push(name.clone());
+            i += 1;
         }
         self.managed_panes = managed;
 
