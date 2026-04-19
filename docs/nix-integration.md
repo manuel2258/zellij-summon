@@ -165,5 +165,5 @@ The plugin config and all keybind blocks are regenerated automatically.
 }
 ```
 
-> A `flake.nix` will be added to the repository in a future release. Until then,
-> use `pkgs.callPackage ./nix/default.nix {}` to build from a local checkout.
+The repository ships a `flake.nix` — pin it directly via the URL above and the
+`packages.${system}.default` output will contain the built `.wasm` artifact.
