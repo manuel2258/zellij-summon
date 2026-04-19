@@ -211,13 +211,6 @@ impl State {
     }
 }
 
-fn pane_id_matches(pid: PaneId, pane: &PaneInfo) -> bool {
-    match pid {
-        PaneId::Terminal(id) => id == pane.id && !pane.is_plugin,
-        PaneId::Plugin(id) => id == pane.id && pane.is_plugin,
-    }
-}
-
 fn make_pane_id(pane: &PaneInfo) -> PaneId {
     if pane.is_plugin {
         PaneId::Plugin(pane.id)
@@ -395,7 +388,11 @@ mod tests {
         let mut s = state_with_pane("broot", 42);
 
         // Same numeric id, but title now shows the current working directory
-        s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot - /home/user")]));
+        s.rebuild_pane_map(make_manifest(vec![make_pane(
+            42,
+            false,
+            "broot - /home/user",
+        )]));
 
         assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
     }
