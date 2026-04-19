@@ -1,6 +1,6 @@
 [package]
 name = "zellij-pane-manager"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Headless Zellij plugin for keybind-driven floating pane management"
 license = "MIT"
