@@ -60,8 +60,8 @@ layout {
         // ── Plugin control pane ─────────────────────────────────────────────
         //
         // size=1 borderless=true makes it effectively invisible.
-        // The full pane list must be present here AND in every keybind block
-        // so that state is consistent when LaunchOrFocusPlugin re-calls load().
+        // Keybinds use MessagePlugin to send the target name as a payload to
+        // this always-running instance — see docs/README.md for keybind setup.
         //
         pane size=1 borderless=true {
             plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
