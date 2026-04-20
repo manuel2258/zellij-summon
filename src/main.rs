@@ -200,7 +200,7 @@ impl State {
         for action in self.process_target_actions(target) {
             match action {
                 PaneAction::Hide(pid) => hide_pane_with_id(pid),
-                PaneAction::Show(pid) => show_pane_with_id(pid, true),
+                PaneAction::Show(pid) => show_pane_with_id(pid, true, true),
             }
         }
     }
