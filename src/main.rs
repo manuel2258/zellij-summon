@@ -23,7 +23,7 @@ struct State {
     shown_pane: Option<String>,
     /// which managed panes are in the "pinned" state
     pinned_panes: HashSet<String>,
-    /// target from the most recent load() call, consumed in next PaneUpdate
+    /// queued target from a PipeMessage that arrived before pane_map was populated
     pending_target: Option<String>,
     /// whether first-time setup (permissions + subscription) has been done
     initialized: bool,
@@ -59,8 +59,6 @@ impl ZellijPlugin for State {
             }
         }
 
-        self.pending_target = configuration.get("target").cloned();
-
         if !self.initialized {
             self.initialized = true;
             request_permission(&[
@@ -69,14 +67,7 @@ impl ZellijPlugin for State {
             ]);
             // PermissionRequestResult triggers subscription to PaneUpdate
             subscribe(&[EventType::PermissionRequestResult]);
-        } else if !self.pane_map.is_empty() {
-            // Plugin already running and pane map is warm — process immediately
-            if let Some(target) = self.pending_target.take() {
-                self.process_target(&target);
-            }
         }
-        // If pane_map is empty on a subsequent load(), the pending_target will
-        // be consumed once the next PaneUpdate populates the map.
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -93,6 +84,17 @@ impl ZellijPlugin for State {
             _ => {}
         }
         false // headless — nothing to render
+    }
+
+    fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        if let Some(payload) = pipe_message.payload {
+            if self.pane_map.is_empty() {
+                self.pending_target = Some(payload);
+            } else {
+                self.process_target(&payload);
+            }
+        }
+        false
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
@@ -196,6 +198,7 @@ impl State {
 
     /// Dispatch the actions returned by process_target_actions to the Zellij shim.
     /// This is the only place shim functions are called for pane visibility.
+    #[cfg(not(test))]
     fn process_target(&mut self, target: &str) {
         for action in self.process_target_actions(target) {
             match action {
@@ -203,6 +206,13 @@ impl State {
                 PaneAction::Show(pid) => show_pane_with_id(pid, true, true),
             }
         }
+    }
+
+    // In test builds the shim functions are unavailable (WASM host imports).
+    // Run process_target_actions for its state-mutation side effects only.
+    #[cfg(test)]
+    fn process_target(&mut self, target: &str) {
+        let _ = self.process_target_actions(target);
     }
 }
 

@@ -99,46 +99,25 @@ layout {
 ## Keybind setup
 
 Add this block to your Zellij config (`~/.config/zellij/config.kdl`).
-The full pane list must be repeated in every `LaunchOrFocusPlugin` block so the
-plugin has consistent state on each invocation.
+Each keybind sends a `MessagePlugin` payload to the always-running headless plugin — no
+pane list duplication needed.
 
 ```kdl
 keybinds {
     shared_except "locked" {
         bind "Alt b" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                floating false
-                pane_0_name "broot"
-                pane_0_key "Alt b"
-                pane_1_name "claude"
-                pane_1_key "Alt c"
-                pane_2_name "terminal"
-                pane_2_key "Alt t"
-                target "broot"
+            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                payload "broot"
             }
         }
         bind "Alt c" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                floating false
-                pane_0_name "broot"
-                pane_0_key "Alt b"
-                pane_1_name "claude"
-                pane_1_key "Alt c"
-                pane_2_name "terminal"
-                pane_2_key "Alt t"
-                target "claude"
+            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                payload "claude"
             }
         }
         bind "Alt t" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                floating false
-                pane_0_name "broot"
-                pane_0_key "Alt b"
-                pane_1_name "claude"
-                pane_1_key "Alt c"
-                pane_2_name "terminal"
-                pane_2_key "Alt t"
-                target "terminal"
+            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                payload "terminal"
             }
         }
     }
@@ -187,14 +166,15 @@ pane A is immediately hidden (and unpinned) and pane B shows unpinned.
 ## Config reference
 
 All plugin config keys follow the pattern `pane_N_*` where N is 0-indexed.
+These are set once in the layout plugin block; keybinds send the target via `MessagePlugin` payload.
 
 | Key | Required | Description |
 |-----|----------|-------------|
 | `pane_N_name` | Yes | Must match the `name` field of the floating pane in your layout |
 | `pane_N_key` | No | Informational only — documents the intended keybind; not used by the plugin |
-| `target` | Per-keybind | The pane name to toggle; set by each `LaunchOrFocusPlugin` keybind block |
 
 Panes are ordered by N (0, 1, 2, …). Parsing stops at the first missing index.
+The keybind `payload` is the pane name to toggle — it must match a configured `pane_N_name`.
 
 ---
 
