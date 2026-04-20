@@ -1,0 +1,19 @@
+// Minimal smoke-test layout.
+// One floating terminal pane (the managed pane) and the headless plugin pane.
+layout {
+    tab name="test" hide_floating_panes=true {
+        pane
+
+        floating_panes {
+            pane name="terminal" {
+                x "10%" y "10%" width "80%" height "80%"
+            }
+        }
+
+        pane size=1 borderless=true {
+            plugin location="file:TARGET_WASM" {
+                pane_0_name "terminal"
+            }
+        }
+    }
+}

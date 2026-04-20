@@ -1,0 +1,13 @@
+// Minimal smoke-test config: keybind that exercises LaunchOrFocusPlugin.
+keybinds {
+    shared {
+        bind "Alt t" {
+            LaunchOrFocusPlugin "file:TARGET_WASM" {
+                floating true
+                move_to_focused_tab true
+                pane_0_name "terminal"
+                target "terminal"
+            }
+        }
+    }
+}
