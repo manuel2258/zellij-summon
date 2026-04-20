@@ -27,7 +27,7 @@ rustPlatform.buildRustPackage {
 
   installPhase = ''
     mkdir -p $out
-    cp target/wasm32-wasip1/release/zellij_pane_manager.wasm \
+    cp target/wasm32-wasip1/release/zellij-pane-manager.wasm \
        $out/zellij-pane-manager.wasm
   '';
 
