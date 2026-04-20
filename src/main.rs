@@ -198,6 +198,7 @@ impl State {
 
     /// Dispatch the actions returned by process_target_actions to the Zellij shim.
     /// This is the only place shim functions are called for pane visibility.
+    #[cfg(not(test))]
     fn process_target(&mut self, target: &str) {
         for action in self.process_target_actions(target) {
             match action {
@@ -205,6 +206,13 @@ impl State {
                 PaneAction::Show(pid) => show_pane_with_id(pid, true, true),
             }
         }
+    }
+
+    // In test builds the shim functions are unavailable (WASM host imports).
+    // Run process_target_actions for its state-mutation side effects only.
+    #[cfg(test)]
+    fn process_target(&mut self, target: &str) {
+        let _ = self.process_target_actions(target);
     }
 }
 
