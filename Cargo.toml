@@ -7,9 +7,9 @@ license = "MIT"
 repository = "https://github.com/manuel2258/zellij-summon"
 autobins = false
 
-[lib]
+[[bin]]
+name = "zellij-pane-manager"
 path = "src/main.rs"
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 zellij-tile = "0.44"
