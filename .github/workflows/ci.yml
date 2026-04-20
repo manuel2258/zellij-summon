@@ -68,3 +68,59 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --release --locked --target wasm32-wasip1
+
+  smoke-test:
+    name: Smoke test (Zellij 0.44.1 / wasmi)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build WASM
+        run: cargo build --release --locked --target wasm32-wasip1
+
+      - name: Download Zellij 0.44.1
+        run: |
+          curl -fsSL \
+            https://github.com/zellij-org/zellij/releases/download/v0.44.1/zellij-x86_64-unknown-linux-musl.tar.gz \
+            | tar xz -C /usr/local/bin zellij
+          zellij --version
+
+      - name: Start Zellij in a detached tmux session
+        run: |
+          # Pre-create the data dir so Zellij skips the first-run setup wizard.
+          mkdir -p "/tmp/zellij-$(id -u)"
+          touch   "/tmp/zellij-$(id -u)/contract_version_1"
+
+          tmux new-session -d -s zellij-ci -x 220 -y 50 \
+            "zellij --debug --session zellij-ci"
+
+          # Poll until the Zellij server accepts action commands (up to 15 s).
+          for i in $(seq 1 30); do
+            sleep 0.5
+            zellij action list-clients &>/dev/null && echo "Zellij ready after ${i}×0.5 s" && break
+          done
+          zellij action list-clients
+
+      - name: Run smoke test
+        run: bash test-plugin.sh
+
+      - name: Dump Zellij log on failure
+        if: failure()
+        run: cat "/tmp/zellij-$(id -u)/zellij-log/zellij.log" 2>/dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: tmux kill-server 2>/dev/null || true

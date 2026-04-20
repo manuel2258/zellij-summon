@@ -81,6 +81,5 @@ fi
 if [[ "$LOAD_OK" -gt 0 ]]; then
   echo "[test] PASS — plugin loaded in Zellij 0.44 wasmi (pane $PANE_ID)"
 else
-  echo "[test] PASS — no load errors (plugin already cached; pane $PANE_ID)"
+  echo "[test] PASS — no load errors (plugin was served from cache; pane $PANE_ID)"
 fi
-echo "       Close the plugin pane with Ctrl+q when done"
