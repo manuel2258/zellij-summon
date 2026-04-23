@@ -9,6 +9,12 @@
 //   - If your application overwrites the terminal title, the plugin detects
 //     the pane during the first PaneUpdate (before the title changes).
 //     This is reliable for preloaded and lazy panes alike.
+//
+// N-instance requirement:
+//   Zellij 0.44 identifies plugin instances by (URL + user_configuration).
+//   Each keybind's LaunchOrFocusPlugin config must exactly match one layout
+//   plugin instance. The pattern is one plugin pane per managed pane, each
+//   with a unique `target` key plus the shared pane list (no pane_N_key).
 
 layout {
     tab name="dev" hide_floating_panes=true {
@@ -50,30 +56,55 @@ layout {
             }
 
             // Git UI — optional, lazy-loaded
-            // Uncomment to enable; add a pane_3_* entry in the plugin block
+            // Uncomment to enable; add a matching plugin pane below
             // and a corresponding keybind (e.g. Alt g) in config.kdl.
             // pane command="lazygit" name="lazygit" start_suspended=true {
             //     x "10%" y "5%" width "80%" height "90%"
             // }
         }
 
-        // ── Plugin control pane ─────────────────────────────────────────────
+        // ── Plugin control panes (one per managed pane) ─────────────────────
         //
-        // size=1 borderless=true makes it effectively invisible.
-        // Keybinds use MessagePlugin to send the target name as a payload to
-        // this always-running instance — see docs/README.md for keybind setup.
+        // size=1 borderless=true makes each instance effectively invisible.
+        // Each instance has a unique `target` key; the pane list is the same
+        // in all. LaunchOrFocusPlugin keybinds carry the identical config so
+        // Zellij matches the running instance rather than spawning a new one.
         //
         pane size=1 borderless=true {
             plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "broot"
                 pane_0_name "broot"
-                pane_0_key "Alt b"
                 pane_1_name "claude"
-                pane_1_key "Alt c"
                 pane_2_name "terminal"
-                pane_2_key "Alt t"
                 // pane_3_name "lazygit"
-                // pane_3_key "Alt g"
             }
         }
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "claude"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
+                // pane_3_name "lazygit"
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "terminal"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
+                // pane_3_name "lazygit"
+            }
+        }
+        // pane size=1 borderless=true {
+        //     plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+        //         target "lazygit"
+        //         pane_0_name "broot"
+        //         pane_1_name "claude"
+        //         pane_2_name "terminal"
+        //         pane_3_name "lazygit"
+        //     }
+        // }
     }
 }
