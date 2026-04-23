@@ -93,11 +93,8 @@ in {
     keybinds {
         shared_except "locked" {
             bind "Alt b" {
-                LaunchOrFocusPlugin "file:${pluginPath}" {
-                    floating false
-                    pane_0_name "broot"
-                    pane_0_key  "Alt b"
-                    target      "broot"
+                MessagePlugin "file:${pluginPath}" {
+                    payload "broot"
                 }
             }
         }
@@ -134,7 +131,8 @@ let
   ];
   # ─────────────────────────────────────────────────────────────────────────
 
-  # Shared plugin config block (same content in layout and every keybind)
+  # Plugin config block used in the layout's plugin pane only.
+  # Keybinds no longer need to repeat this list.
   pluginConfigBlock = lib.concatStringsSep "\n" (
     lib.imap0 (i: p: ''
                     pane_${toString i}_name "${p.name}"
@@ -168,12 +166,12 @@ let
     }
   '';
 
+  # Each keybind sends a MessagePlugin payload — just the pane name.
+  # No pane list duplication needed.
   keybindBlock = lib.concatStringsSep "\n" (map (p: ''
         bind "${p.key}" {
-            LaunchOrFocusPlugin "file:${pluginPath}" {
-                floating false
-    ${pluginConfigBlock}
-                target "${p.name}"
+            MessagePlugin "file:${pluginPath}" {
+                payload "${p.name}"
             }
         }'') managedPanes);
 
