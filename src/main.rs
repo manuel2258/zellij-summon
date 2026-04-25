@@ -3,6 +3,16 @@ use zellij_tile::prelude::*;
 
 register_plugin!(State);
 
+const LOG_PATH: &str = "/tmp/zellij-pane-manager.log";
+
+fn log(msg: &str) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(LOG_PATH) {
+        writeln!(f, "{msg}").ok();
+    }
+}
+
 /// Each managed pane cycles through three states on successive keybind presses:
 ///   HIDDEN → SHOWN (unpinned) → SHOWN (pinned) → HIDDEN
 ///
@@ -50,6 +60,12 @@ pub enum PaneAction {
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
+        log(&format!(
+            "[load] called — config keys: {:?}",
+            configuration.keys().collect::<Vec<_>>()
+        ));
+        log(&format!("[load] full config: {:?}", configuration));
+
         // Parse the ordered managed-pane list from config keys pane_0_name, pane_1_name, …
         let mut managed = Vec::new();
         let mut i = 0;
@@ -58,6 +74,7 @@ impl ZellijPlugin for State {
             i += 1;
         }
         self.managed_panes = managed;
+        log(&format!("[load] managed_panes: {:?}", self.managed_panes));
 
         // Prune stale entries left over from a previous config (rename, removal).
         let current = self.managed_panes.clone();
@@ -68,15 +85,28 @@ impl ZellijPlugin for State {
         // Each layout plugin instance has a unique `target` key. LaunchOrFocusPlugin
         // matches (URL + full config) to find this exact instance, then calls load().
         if let Some(target) = configuration.get("target").cloned() {
+            log(&format!(
+                "[load] target={target:?} pane_map_empty={}",
+                self.pane_map.is_empty()
+            ));
             if self.pane_map.is_empty() {
                 // pane_map not yet populated — queue for first PaneUpdate
+                log(&format!("[load] queuing pending_target={target:?}"));
                 self.pending_target = Some(target);
             } else {
                 // Warm path: pane_map already populated from a prior PaneUpdate
+                log(&format!(
+                    "[load] warm path — pane_map={:?} pane_visible={:?}",
+                    self.pane_map.keys().collect::<Vec<_>>(),
+                    self.pane_visible
+                ));
                 self.process_target(&target);
             }
+        } else {
+            log("[load] no 'target' key in config — this instance will not act on any keybind");
         }
 
+        log(&format!("[load] initialized={}", self.initialized));
         if !self.initialized {
             self.initialized = true;
             request_permission(&[
@@ -91,11 +121,19 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                log("[update] PermissionRequestResult::Granted — subscribing to PaneUpdate");
                 subscribe(&[EventType::PaneUpdate]);
             }
             Event::PaneUpdate(manifest) => {
                 self.rebuild_pane_map(manifest);
+                log(&format!(
+                    "[update] PaneUpdate — pane_map={:?} pane_visible={:?} pending={:?}",
+                    self.pane_map.keys().collect::<Vec<_>>(),
+                    self.pane_visible,
+                    self.pending_target
+                ));
                 if let Some(target) = self.pending_target.take() {
+                    log(&format!("[update] draining pending_target={target:?}"));
                     self.process_target(&target);
                 }
             }
@@ -227,10 +265,24 @@ impl State {
     /// Dispatch the actions returned by process_target_actions to the Zellij shim.
     #[cfg(not(test))]
     fn process_target(&mut self, target: &str) {
-        for action in self.process_target_actions(target) {
+        log(&format!(
+            "[process_target] target={target:?} pane_map={:?} pane_visible={:?} pinned={:?}",
+            self.pane_map.keys().collect::<Vec<_>>(),
+            self.pane_visible,
+            self.pinned_panes
+        ));
+        let actions = self.process_target_actions(target);
+        log(&format!("[process_target] actions={actions:?}"));
+        for action in actions {
             match action {
-                PaneAction::Hide(pid) => hide_pane_with_id(pid),
-                PaneAction::Show(pid) => show_pane_with_id(pid, true, true),
+                PaneAction::Hide(pid) => {
+                    log(&format!("[process_target] hide_pane_with_id({pid:?})"));
+                    hide_pane_with_id(pid);
+                }
+                PaneAction::Show(pid) => {
+                    log(&format!("[process_target] show_pane_with_id({pid:?})"));
+                    show_pane_with_id(pid, true, true);
+                }
             }
         }
     }
