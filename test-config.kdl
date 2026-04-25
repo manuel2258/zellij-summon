@@ -1,9 +1,11 @@
-// Minimal smoke-test config: keybind that exercises MessagePlugin.
+// Minimal smoke-test config: keybind that exercises LaunchOrFocusPlugin.
+// The config must exactly match the layout plugin instance's user_configuration.
 keybinds {
     shared {
         bind "Alt t" {
-            MessagePlugin "file:TARGET_WASM" {
-                payload "terminal"
+            LaunchOrFocusPlugin "file:TARGET_WASM" {
+                target "terminal"
+                pane_0_name "terminal"
             }
         }
     }

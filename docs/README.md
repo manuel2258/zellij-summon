@@ -45,7 +45,8 @@ See [nix-integration.md](nix-integration.md) for a home-manager example that gen
 ## Layout setup
 
 Add this tab to your layout file (`~/.config/zellij/layouts/default.kdl` or similar).
-The key constraint: **every floating pane must have a unique `name`** that matches the plugin config.
+Two constraints: **every floating pane must have a unique `name`**, and you need
+**one headless plugin pane per managed pane** (see the N-instance note below).
 
 ```kdl
 layout {
@@ -71,20 +72,44 @@ layout {
             }
         }
 
-        // Headless plugin — one invisible row
+        // One headless plugin pane per managed pane.
+        // Each has a unique `target` key; the full pane list is repeated in each.
+        // The matching keybind (LaunchOrFocusPlugin) must carry the identical config
+        // so Zellij finds the running instance instead of spawning a new one.
         pane size=1 borderless=true {
             plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "broot"
                 pane_0_name "broot"
-                pane_0_key "Alt b"
                 pane_1_name "claude"
-                pane_1_key "Alt c"
                 pane_2_name "terminal"
-                pane_2_key "Alt t"
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "claude"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "terminal"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
             }
         }
     }
 }
 ```
+
+> **Why N instances?**  Zellij 0.44 identifies plugin instances by
+> **(URL + full user_configuration)**. A single layout plugin would only be
+> found by keybinds whose config is byte-for-byte identical — which means no way
+> to pass a per-keybind target. The N-instance pattern gives each keybind a
+> unique match (via `target`) while keeping the full pane list identical so each
+> instance can hide all other visible panes when showing its own.
 
 > **Tip — lazy vs preloaded:**
 > - `start_suspended=true` → process starts on first trigger (saves memory)
@@ -99,25 +124,34 @@ layout {
 ## Keybind setup
 
 Add this block to your Zellij config (`~/.config/zellij/config.kdl`).
-Each keybind sends a `MessagePlugin` payload to the always-running headless plugin — no
-pane list duplication needed.
+Each keybind uses `LaunchOrFocusPlugin` with a config that **exactly matches** its
+corresponding layout plugin instance — same `target`, same `pane_N_name` list.
 
 ```kdl
 keybinds {
     shared_except "locked" {
         bind "Alt b" {
-            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                payload "broot"
+            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "broot"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
             }
         }
         bind "Alt c" {
-            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                payload "claude"
+            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "claude"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
             }
         }
         bind "Alt t" {
-            MessagePlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                payload "terminal"
+            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
+                target "terminal"
+                pane_0_name "broot"
+                pane_1_name "claude"
+                pane_2_name "terminal"
             }
         }
     }
@@ -156,7 +190,7 @@ pane A is immediately hidden (and unpinned) and pane B shows unpinned.
 > **Note on native Zellij pinning:** Zellij has a built-in floating-pane pin
 > feature that keeps a pane visible while you interact with other panes. The
 > plugin API does not yet expose a way to set this programmatically (as of
-> zellij-tile 0.42). The "pinned" state above is internal to this plugin and
+> zellij-tile 0.44). The "pinned" state above is internal to this plugin and
 > only affects the toggle cycle length — it does not prevent Zellij from
 > suppressing the pane if you click elsewhere. Native pin support will be added
 > when the upstream API provides it.
@@ -165,16 +199,18 @@ pane A is immediately hidden (and unpinned) and pane B shows unpinned.
 
 ## Config reference
 
-All plugin config keys follow the pattern `pane_N_*` where N is 0-indexed.
-These are set once in the layout plugin block; keybinds send the target via `MessagePlugin` payload.
+All plugin config keys are set in the layout plugin block and **must be repeated
+verbatim in the matching keybind** (Zellij 0.44 matches plugin instances by URL +
+full configuration).
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `pane_N_name` | Yes | Must match the `name` field of the floating pane in your layout |
-| `pane_N_key` | No | Informational only — documents the intended keybind; not used by the plugin |
+| `target` | Yes | The pane name this instance will show/hide when triggered |
+| `pane_N_name` | Yes | Must match the `name` field of a floating pane in your layout |
 
-Panes are ordered by N (0, 1, 2, …). Parsing stops at the first missing index.
-The keybind `payload` is the pane name to toggle — it must match a configured `pane_N_name`.
+`pane_N_name` keys are 0-indexed. Parsing stops at the first missing index.
+`target` must equal one of the configured `pane_N_name` values.
+Do **not** include `pane_N_key` — it is no longer used and would break the config match.
 
 ---
 
