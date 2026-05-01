@@ -45,8 +45,7 @@ See [nix-integration.md](nix-integration.md) for a home-manager example that gen
 ## Layout setup
 
 Add this tab to your layout file (`~/.config/zellij/layouts/default.kdl` or similar).
-Two constraints: **every floating pane must have a unique `name`**, and you need
-**one headless plugin pane per managed pane** (see the N-instance note below).
+Every floating pane must have a unique `name`. A single headless plugin pane manages all of them.
 
 ```kdl
 layout {
@@ -72,29 +71,9 @@ layout {
             }
         }
 
-        // One headless plugin pane per managed pane.
-        // Each has a unique `target` key; the full pane list is repeated in each.
-        // The matching keybind (LaunchOrFocusPlugin) must carry the identical config
-        // so Zellij finds the running instance instead of spawning a new one.
+        // One headless plugin pane manages all floating panes.
         pane size=1 borderless=true {
             plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "broot"
-                pane_0_name "broot"
-                pane_1_name "claude"
-                pane_2_name "terminal"
-            }
-        }
-        pane size=1 borderless=true {
-            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "claude"
-                pane_0_name "broot"
-                pane_1_name "claude"
-                pane_2_name "terminal"
-            }
-        }
-        pane size=1 borderless=true {
-            plugin location="file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "terminal"
                 pane_0_name "broot"
                 pane_1_name "claude"
                 pane_2_name "terminal"
@@ -103,13 +82,6 @@ layout {
     }
 }
 ```
-
-> **Why N instances?**  Zellij 0.44 identifies plugin instances by
-> **(URL + full user_configuration)**. A single layout plugin would only be
-> found by keybinds whose config is byte-for-byte identical — which means no way
-> to pass a per-keybind target. The N-instance pattern gives each keybind a
-> unique match (via `target`) while keeping the full pane list identical so each
-> instance can hide all other visible panes when showing its own.
 
 > **Tip — lazy vs preloaded:**
 > - `start_suspended=true` → process starts on first trigger (saves memory)
@@ -124,34 +96,29 @@ layout {
 ## Keybind setup
 
 Add this block to your Zellij config (`~/.config/zellij/config.kdl`).
-Each keybind uses `LaunchOrFocusPlugin` with a config that **exactly matches** its
-corresponding layout plugin instance — same `target`, same `pane_N_name` list.
+Each keybind uses `MessagePlugin` (broadcast — no URL) to deliver the target pane
+name to the running plugin instance. Zellij forwards the message to all running
+plugins; the plugin recognises the `"toggle"` name and acts on it.
 
 ```kdl
 keybinds {
     shared_except "locked" {
         bind "Alt b" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "broot"
-                pane_0_name "broot"
-                pane_1_name "claude"
-                pane_2_name "terminal"
+            MessagePlugin {
+                name "toggle"
+                payload "broot"
             }
         }
         bind "Alt c" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "claude"
-                pane_0_name "broot"
-                pane_1_name "claude"
-                pane_2_name "terminal"
+            MessagePlugin {
+                name "toggle"
+                payload "claude"
             }
         }
         bind "Alt t" {
-            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/zellij-pane-manager.wasm" {
-                target "terminal"
-                pane_0_name "broot"
-                pane_1_name "claude"
-                pane_2_name "terminal"
+            MessagePlugin {
+                name "toggle"
+                payload "terminal"
             }
         }
     }
@@ -191,26 +158,38 @@ pane A is immediately hidden (and unpinned) and pane B shows unpinned.
 > feature that keeps a pane visible while you interact with other panes. The
 > plugin API does not yet expose a way to set this programmatically (as of
 > zellij-tile 0.44). The "pinned" state above is internal to this plugin and
-> only affects the toggle cycle length — it does not prevent Zellij from
-> suppressing the pane if you click elsewhere. Native pin support will be added
-> when the upstream API provides it.
+> only affects the toggle cycle length. Native pin support will be added when
+> the upstream API provides it.
 
 ---
 
 ## Config reference
 
-All plugin config keys are set in the layout plugin block and **must be repeated
-verbatim in the matching keybind** (Zellij 0.44 matches plugin instances by URL +
-full configuration).
+All plugin config keys are set in the layout plugin block.
 
 | Key | Required | Description |
 |-----|----------|-------------|
-| `target` | Yes | The pane name this instance will show/hide when triggered |
 | `pane_N_name` | Yes | Must match the `name` field of a floating pane in your layout |
 
 `pane_N_name` keys are 0-indexed. Parsing stops at the first missing index.
-`target` must equal one of the configured `pane_N_name` values.
-Do **not** include `pane_N_key` — it is no longer used and would break the config match.
+
+Keybind `MessagePlugin` blocks use:
+
+| Key | Value |
+|-----|-------|
+| `name` | Always `"toggle"` |
+| `payload` | The name of the pane to toggle (must be one of the configured `pane_N_name` values) |
+
+---
+
+## Debugging
+
+The plugin writes a log to `/tmp/zellij-pane-manager.log` (append mode).
+Tail it alongside Zellij to trace pane discovery, keybind messages, and state transitions:
+
+```sh
+tail -f /tmp/zellij-pane-manager.log
+```
 
 ---
 
@@ -223,6 +202,7 @@ startup. If the pane's terminal application overwrites the title before the
 first `PaneUpdate` event arrives, the match fails. Workarounds:
 - Use `start_suspended=true` for panes whose apps set an aggressive title.
 - Ensure the layout `name` field matches the application's initial title exactly.
+- Check the log — a `WARN` line will appear when discovery fails.
 
 **Grant permissions prompt**
 

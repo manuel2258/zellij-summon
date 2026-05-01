@@ -89,15 +89,13 @@ let
 in {
   # The .wasm is now available as a store path in pluginPath.
   # Wire it into your existing hand-written zellij config.
-  # IMPORTANT: the LaunchOrFocusPlugin config must exactly match the
-  # corresponding layout plugin block (same target + pane_N_name list).
   xdg.configFile."zellij/config.kdl".text = ''
     keybinds {
         shared_except "locked" {
             bind "Alt b" {
-                LaunchOrFocusPlugin "file:${pluginPath}" {
-                    target "broot"
-                    pane_0_name "broot"
+                MessagePlugin {
+                    name "toggle"
+                    payload "broot"
                 }
             }
         }
@@ -111,7 +109,7 @@ in {
 ## Full home-manager setup — generate layout + keybinds from Nix
 
 Define your panes once in a Nix list and let the module generate both the layout
-KDL (N plugin panes) and keybind KDL. Adding a new pane then requires only one
+KDL (one plugin pane) and keybind KDL. Adding a new pane then requires only one
 line.
 
 ### flake.nix
@@ -135,24 +133,20 @@ let
   ];
   # ─────────────────────────────────────────────────────────────────────────
 
-  # Shared pane list block (pane_0_name … pane_N_name).
-  # Zellij 0.44 identifies plugin instances by (URL + full user_configuration).
-  # Every layout plugin instance and its matching keybind must carry identical
-  # config — same target and same pane list (no pane_N_key).
+  # Shared pane list block (pane_0_name … pane_N_name) used in the layout plugin.
   paneListBlock = lib.concatStringsSep "\n" (
     lib.imap0 (i: p: ''
                     pane_${toString i}_name "${p.name}"'')
       managedPanes
   );
 
-  # One headless plugin pane per managed pane (N instances total).
-  pluginPanesBlock = lib.concatStringsSep "\n" (map (p: ''
+  # Single headless plugin pane for all managed panes.
+  pluginPaneBlock = ''
         pane size=1 borderless=true {
             plugin location="file:${pluginPath}" {
-                target "${p.name}"
     ${paneListBlock}
             }
-        }'') managedPanes);
+        }'';
 
   layoutTab = ''
     tab name="dev" hide_floating_panes=true {
@@ -172,16 +166,17 @@ let
             }
         }
 
-    ${pluginPanesBlock}
+    ${pluginPaneBlock}
     }
   '';
 
-  # Each keybind carries target + pane list — identical to its layout instance.
+  # Each keybind sends a broadcast MessagePlugin with the pane name as payload.
+  # No URL needed — Zellij broadcasts to all running plugins.
   keybindBlock = lib.concatStringsSep "\n" (map (p: ''
         bind "${p.key}" {
-            LaunchOrFocusPlugin "file:${pluginPath}" {
-                target "${p.name}"
-    ${paneListBlock}
+            MessagePlugin {
+                name "toggle"
+                payload "${p.name}"
             }
         }'') managedPanes);
 
