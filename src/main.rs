@@ -101,6 +101,7 @@ impl ZellijPlugin for State {
                 log_info!("permissions granted — subscribing to PaneUpdate");
                 self.permissions_granted = true;
                 subscribe(&[EventType::PaneUpdate]);
+                return true; // trigger render to clear the permission prompt
             }
             Event::PermissionRequestResult(status) => {
                 log_error!(
@@ -138,11 +139,13 @@ impl ZellijPlugin for State {
     }
 
     fn pipe(&mut self, pipe_message: PipeMessage) -> bool {
+        let mut needs_render = false;
         if pipe_message.name == "toggle" {
             if let Some(target) = pipe_message.payload {
                 log_info!("pipe: toggle '{}'", target);
                 if self.pane_map.contains_key(&target) {
                     self.process_target(&target);
+                    needs_render = true;
                 } else {
                     log_warn!(
                         "pipe: pane '{}' not yet in pane_map (managed: {:?}), queuing as pending_target",
@@ -161,7 +164,7 @@ impl ZellijPlugin for State {
                 pipe_message.payload
             );
         }
-        false // headless — nothing to render
+        needs_render
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
