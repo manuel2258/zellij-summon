@@ -49,6 +49,8 @@ struct State {
     pending_target: Option<String>,
     /// whether first-time setup (permissions + subscription) has been done
     initialized: bool,
+    /// whether permissions have been granted; false means dialog may be pending
+    permissions_granted: bool,
     /// tab index this plugin lives in; used to exclude panes from other tabs
     own_tab_index: Option<usize>,
 }
@@ -97,6 +99,7 @@ impl ZellijPlugin for State {
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
                 log_info!("permissions granted — subscribing to PaneUpdate");
+                self.permissions_granted = true;
                 subscribe(&[EventType::PaneUpdate]);
             }
             Event::PermissionRequestResult(status) => {
@@ -162,7 +165,17 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
-        // intentionally empty: this plugin is headless (size=1 borderless=true)
+        if !self.permissions_granted {
+            print!(
+                " \u{26a0} pane-manager: waiting for permission grant — resize this pane to accept"
+            );
+            return;
+        }
+        let status = match &self.active_pane {
+            Some(name) => format!(" \u{25b6} {}", name),
+            None => " \u{25a1} idle".to_string(),
+        };
+        print!("{}", status);
     }
 }
 
