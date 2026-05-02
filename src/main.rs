@@ -23,16 +23,12 @@ macro_rules! log_error { ($($t:tt)*) => { log("ERROR", &format!($($t)*)) }; }
 
 // ── state ─────────────────────────────────────────────────────────────────────
 
-/// Each managed pane cycles through three states on successive keybind presses:
-///   HIDDEN → SHOWN (unpinned) → SHOWN (pinned) → HIDDEN
+/// Each managed pane toggles on successive keybind presses:
+///   HIDDEN → SHOWN (press to show), SHOWN → HIDDEN (press again to close)
 ///
-/// "Pinned" here is tracked by the plugin, not by Zellij's native floating-pane
-/// pin feature (which has no plugin API as of zellij-tile 0.44). The practical
-/// effect is that a pinned pane requires two more keybind presses to dismiss,
-/// guarding against accidental closure.
-///
-/// Only one managed pane is shown at a time. Triggering a different pane hides
-/// the current one (regardless of pin state) and shows the new one.
+/// Only one managed pane is shown at a time. Triggering a different pane
+/// simply focuses it (bringing it to the top of the overlapping floating
+/// layer) without explicitly hiding the previous one.
 ///
 /// # Communication
 ///
@@ -46,11 +42,8 @@ struct State {
     pane_map: HashMap<String, PaneId>,
     /// ordered list of managed pane names, parsed from plugin config
     managed_panes: Vec<String>,
-    /// actual Zellij visibility per pane (false = suppressed/hidden); updated
-    /// from PaneUpdate so cross-instance hide actions are reflected correctly
-    pane_visible: HashMap<String, bool>,
-    /// which managed panes are in the "pinned" state (plugin-internal only)
-    pinned_panes: HashSet<String>,
+    /// which pane the plugin last showed; None means floating layer is hidden
+    active_pane: Option<String>,
     /// queued target from a pipe message that arrived before the target pane was
     /// discoverable. Retried on every subsequent PaneUpdate until found.
     pending_target: Option<String>,
@@ -64,8 +57,8 @@ struct State {
 /// The dispatcher (process_target) translates these into real shim calls.
 #[derive(Debug, PartialEq)]
 pub enum PaneAction {
-    Show(PaneId),
-    Hide(PaneId),
+    ShowPaneWithId(PaneId),
+    HideFloatingLayer,
 }
 
 impl ZellijPlugin for State {
@@ -83,8 +76,11 @@ impl ZellijPlugin for State {
         // Prune stale entries left over from a previous config (rename, removal).
         let current = self.managed_panes.clone();
         self.pane_map.retain(|name, _| current.contains(name));
-        self.pane_visible.retain(|name, _| current.contains(name));
-        self.pinned_panes.retain(|name| current.contains(name));
+        if let Some(ref active) = self.active_pane {
+            if !current.contains(active) {
+                self.active_pane = None;
+            }
+        }
 
         if !self.initialized {
             self.initialized = true;
@@ -171,7 +167,7 @@ impl ZellijPlugin for State {
 }
 
 impl State {
-    /// Refresh pane_map and pane_visible from a fresh PaneManifest.
+    /// Refresh pane_map from a fresh PaneManifest.
     ///
     /// Only panes in our own tab are considered — avoids adopting panes from
     /// other tabs whose titles happen to match a managed pane name.
@@ -179,11 +175,10 @@ impl State {
     /// Lifecycle:
     /// 1. Locate our own tab by finding the pane whose plugin id matches ours.
     /// 2. Remove entries for panes no longer present in our tab (externally closed).
-    ///    Pinned state is cleared for evicted panes.
+    ///    active_pane is cleared if the active pane was evicted.
     /// 3. Discover panes not yet mapped by matching their current title to a
     ///    configured managed-pane name. After first discovery, panes are tracked
     ///    by PaneId so title changes don't lose the mapping.
-    /// 4. Update pane_visible for all mapped panes from PaneInfo.is_suppressed.
     fn rebuild_pane_map(&mut self, manifest: PaneManifest) {
         // Step 1: locate our own tab. Skipped in test builds (own_tab_index set directly).
         #[cfg(not(test))]
@@ -232,6 +227,10 @@ impl State {
 
         for name in &evicted {
             log_warn!("pane '{}' evicted (no longer in manifest)", name);
+            if self.active_pane.as_deref() == Some(name.as_str()) {
+                log_info!("active pane '{}' evicted — clearing active_pane", name);
+                self.active_pane = None;
+            }
         }
 
         self.pane_map.retain(|_, pid| {
@@ -241,10 +240,6 @@ impl State {
             };
             live_ids.contains(&key)
         });
-        self.pane_visible
-            .retain(|name, _| self.pane_map.contains_key(name));
-        self.pinned_panes
-            .retain(|name| self.pane_map.contains_key(name));
 
         // Step 4: discover panes not yet in pane_map by matching their title.
         let unmapped: Vec<String> = self
@@ -257,36 +252,8 @@ impl State {
         for name in unmapped {
             if let Some(pane) = tab_panes.iter().find(|p| p.title == name) {
                 let pid = make_pane_id(pane);
-                let visible = !pane.is_suppressed;
-                log_info!(
-                    "discovered pane '{}' → {:?} (visible={})",
-                    name,
-                    pid,
-                    visible
-                );
-                self.pane_map.insert(name.clone(), pid);
-                self.pane_visible.insert(name, visible);
-            }
-        }
-
-        // Step 5: update visibility for already-mapped panes so cross-instance
-        // hide/show actions (from keybind triggers) are reflected here.
-        for (name, pid) in &self.pane_map {
-            if let Some(pane) = tab_panes.iter().find(|p| match *pid {
-                PaneId::Terminal(id) => !p.is_plugin && p.id == id,
-                PaneId::Plugin(id) => p.is_plugin && p.id == id,
-            }) {
-                let new_visible = !pane.is_suppressed;
-                let old_visible = self.pane_visible.get(name).copied().unwrap_or(false);
-                if old_visible != new_visible {
-                    log_debug!(
-                        "pane '{}' visibility: {} → {}",
-                        name,
-                        old_visible,
-                        new_visible
-                    );
-                }
-                self.pane_visible.insert(name.clone(), new_visible);
+                log_info!("discovered pane '{}' → {:?}", name, pid);
+                self.pane_map.insert(name, pid);
             }
         }
     }
@@ -295,69 +262,28 @@ impl State {
     /// keybind trigger and mutates `self` accordingly. Returns the actions in
     /// dispatch order; the caller is responsible for executing them.
     ///
-    /// Visibility is read from pane_visible (authoritative Zellij state from
-    /// PaneUpdate) rather than tracked internally, so stale state from prior
-    /// hide actions is handled correctly once PaneUpdate arrives.
-    ///
     /// State transitions:
-    ///   HIDDEN              → (trigger) → SHOWN unpinned
-    ///   SHOWN unpinned      → (trigger) → SHOWN pinned  (internal state only)
-    ///   SHOWN pinned        → (trigger) → HIDDEN
-    ///   SHOWN (any, other)  → (trigger) → HIDDEN; target → SHOWN unpinned
+    ///   active == target  → HideFloatingLayer  (toggle off)
+    ///   active != target  → ShowPaneWithId      (focus / toggle on)
     fn process_target_actions(&mut self, target: &str) -> Vec<PaneAction> {
-        let mut actions = Vec::new();
-
         if !self.pane_map.contains_key(target) {
             log_warn!("process_target_actions: '{}' not in pane_map", target);
-            return actions;
+            return vec![];
         }
 
-        let target_is_visible = self.pane_visible.get(target).copied().unwrap_or(false);
-        let is_pinned = self.pinned_panes.contains(target);
-
-        log_info!(
-            "process_target_actions: target='{}' visible={} pinned={}",
-            target,
-            target_is_visible,
-            is_pinned
-        );
-
-        if target_is_visible {
-            let pid = *self.pane_map.get(target).unwrap();
-            if is_pinned {
-                // SHOWN pinned → HIDDEN
-                log_info!("  {:?}: SHOWN pinned → HIDDEN", pid);
-                actions.push(PaneAction::Hide(pid));
-                self.pinned_panes.remove(target);
-            } else {
-                // SHOWN unpinned → SHOWN pinned (no API call — internal state only)
-                log_info!("  SHOWN unpinned → SHOWN pinned (no API call)");
-                self.pinned_panes.insert(target.to_string());
-            }
+        if self.active_pane.as_deref() == Some(target) {
+            log_info!(
+                "process_target_actions: '{}' active → hiding floating layer",
+                target
+            );
+            self.active_pane = None;
+            vec![PaneAction::HideFloatingLayer]
         } else {
-            // Target hidden — hide every other currently visible managed pane,
-            // then show target.
-            for name in self.managed_panes.clone() {
-                if name != target
-                    && self
-                        .pane_visible
-                        .get(name.as_str())
-                        .copied()
-                        .unwrap_or(false)
-                {
-                    if let Some(&pid) = self.pane_map.get(name.as_str()) {
-                        log_info!("  hiding sibling '{}': Hide({:?})", name, pid);
-                        actions.push(PaneAction::Hide(pid));
-                        self.pinned_panes.remove(&name);
-                    }
-                }
-            }
-            let target_pid = *self.pane_map.get(target).unwrap();
-            log_info!("  {:?}: HIDDEN → SHOWN unpinned", target_pid);
-            actions.push(PaneAction::Show(target_pid));
+            let pid = *self.pane_map.get(target).unwrap();
+            log_info!("process_target_actions: showing '{}' ({:?})", target, pid);
+            self.active_pane = Some(target.to_string());
+            vec![PaneAction::ShowPaneWithId(pid)]
         }
-
-        actions
     }
 
     /// Dispatch the actions returned by process_target_actions to the Zellij shim.
@@ -365,12 +291,12 @@ impl State {
     fn process_target(&mut self, target: &str) {
         for action in self.process_target_actions(target) {
             match action {
-                PaneAction::Hide(pid) => {
-                    log_debug!("dispatch Hide({:?})", pid);
-                    hide_pane_with_id(pid);
+                PaneAction::HideFloatingLayer => {
+                    log_debug!("dispatch HideFloatingLayer");
+                    let _ = hide_floating_panes(None);
                 }
-                PaneAction::Show(pid) => {
-                    log_debug!("dispatch Show({:?})", pid);
+                PaneAction::ShowPaneWithId(pid) => {
+                    log_debug!("dispatch ShowPaneWithId({:?})", pid);
                     show_pane_with_id(pid, true, true);
                 }
             }
@@ -407,16 +333,6 @@ mod tests {
             id,
             is_plugin,
             title: title.to_string(),
-            is_suppressed: false,
-            ..Default::default()
-        }
-    }
-
-    fn make_suppressed_pane(id: u32, title: &str) -> PaneInfo {
-        PaneInfo {
-            id,
-            title: title.to_string(),
-            is_suppressed: true,
             ..Default::default()
         }
     }
@@ -428,20 +344,19 @@ mod tests {
         }
     }
 
-    /// A State with one known hidden pane (not yet visible), own_tab_index set.
+    /// A State with one known pane (not active), own_tab_index set.
     fn state_with_pane(name: &str, id: u32) -> State {
         let mut s = State::default();
         s.managed_panes = vec![name.to_string()];
         s.pane_map.insert(name.to_string(), PaneId::Terminal(id));
-        s.pane_visible.insert(name.to_string(), false);
         s.own_tab_index = Some(0);
         s
     }
 
-    /// A State with one known visible pane.
-    fn state_with_visible_pane(name: &str, id: u32) -> State {
+    /// A State with one known pane that is the active (shown) pane.
+    fn state_with_active_pane(name: &str, id: u32) -> State {
         let mut s = state_with_pane(name, id);
-        s.pane_visible.insert(name.to_string(), true);
+        s.active_pane = Some(name.to_string());
         s
     }
 
@@ -449,109 +364,57 @@ mod tests {
 
     #[test]
     fn first_trigger_shows_pane() {
-        // HIDDEN → SHOWN unpinned
+        // HIDDEN → SHOWN: pane not active, pressing key shows it
         let mut s = state_with_pane("term", 1);
 
         let actions = s.process_target_actions("term");
 
-        assert_eq!(actions, vec![PaneAction::Show(PaneId::Terminal(1))]);
-        assert!(!s.pinned_panes.contains("term"));
+        assert_eq!(
+            actions,
+            vec![PaneAction::ShowPaneWithId(PaneId::Terminal(1))]
+        );
+        assert_eq!(s.active_pane, Some("term".to_string()));
     }
 
     #[test]
-    fn second_trigger_pins_pane() {
-        // SHOWN unpinned → SHOWN pinned (no shim call — purely internal state)
-        let mut s = state_with_visible_pane("term", 1);
+    fn second_trigger_hides_layer() {
+        // SHOWN → HIDDEN: pane is active, pressing same key hides floating layer
+        let mut s = state_with_active_pane("term", 1);
 
         let actions = s.process_target_actions("term");
 
-        assert!(actions.is_empty());
-        assert!(s.pinned_panes.contains("term"));
-        assert_eq!(s.pane_visible.get("term"), Some(&true)); // still visible
+        assert_eq!(actions, vec![PaneAction::HideFloatingLayer]);
+        assert_eq!(s.active_pane, None);
     }
 
     #[test]
-    fn third_trigger_hides_pinned_pane() {
-        // SHOWN pinned → HIDDEN
-        let mut s = state_with_visible_pane("term", 1);
-        s.pinned_panes.insert("term".to_string());
-
-        let actions = s.process_target_actions("term");
-
-        assert_eq!(actions, vec![PaneAction::Hide(PaneId::Terminal(1))]);
-        assert!(!s.pinned_panes.contains("term"));
-    }
-
-    #[test]
-    fn switch_panes_hides_current_shows_new() {
-        // Triggering a different pane: hide old (unpinned), show new.
+    fn switching_pane_shows_new_pane() {
+        // Triggering a different pane focuses it without hiding the layer
         let mut s = State::default();
         s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
         s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
         s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
-        s.pane_visible.insert("alpha".to_string(), true);
-        s.pane_visible.insert("beta".to_string(), false);
+        s.active_pane = Some("alpha".to_string());
+        s.own_tab_index = Some(0);
 
         let actions = s.process_target_actions("beta");
 
         assert_eq!(
             actions,
-            vec![
-                PaneAction::Hide(PaneId::Terminal(10)),
-                PaneAction::Show(PaneId::Terminal(20)),
-            ]
+            vec![PaneAction::ShowPaneWithId(PaneId::Terminal(20))]
         );
-        assert!(!s.pinned_panes.contains("alpha"));
-    }
-
-    #[test]
-    fn switch_from_pinned_clears_pin_hides_old_shows_new() {
-        // A pinned pane must be unpinned (internally) when a different pane is triggered.
-        let mut s = State::default();
-        s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
-        s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
-        s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
-        s.pane_visible.insert("alpha".to_string(), true);
-        s.pane_visible.insert("beta".to_string(), false);
-        s.pinned_panes.insert("alpha".to_string());
-
-        let actions = s.process_target_actions("beta");
-
-        assert_eq!(
-            actions,
-            vec![
-                PaneAction::Hide(PaneId::Terminal(10)),
-                PaneAction::Show(PaneId::Terminal(20)),
-            ]
-        );
-        assert!(!s.pinned_panes.contains("alpha")); // pin cleared on switch
-    }
-
-    #[test]
-    fn sibling_already_hid_other_pane_no_redundant_hide() {
-        // If "alpha" is already hidden (pane_visible=false), triggering "beta"
-        // should not emit a redundant Hide(alpha) action.
-        let mut s = State::default();
-        s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
-        s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
-        s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
-        s.pane_visible.insert("alpha".to_string(), false); // already hidden
-        s.pane_visible.insert("beta".to_string(), false);
-
-        let actions = s.process_target_actions("beta");
-
-        assert_eq!(actions, vec![PaneAction::Show(PaneId::Terminal(20))]);
+        assert_eq!(s.active_pane, Some("beta".to_string()));
     }
 
     #[test]
     fn unknown_target_is_noop() {
         // A target not in pane_map must leave all state unchanged.
-        let mut s = state_with_visible_pane("known", 1);
+        let mut s = state_with_active_pane("known", 1);
 
         let actions = s.process_target_actions("ghost");
 
         assert!(actions.is_empty());
-        assert_eq!(s.pane_visible.get("known"), Some(&true)); // untouched
+        assert_eq!(s.active_pane, Some("known".to_string())); // untouched
     }
 
     // ── rebuild_pane_map tests ───────────────────────────────────────────────
@@ -566,32 +429,6 @@ mod tests {
         s.rebuild_pane_map(make_manifest(vec![make_pane(42, false, "broot")]));
 
         assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
-        assert_eq!(s.pane_visible.get("broot"), Some(&true)); // not suppressed
-    }
-
-    #[test]
-    fn rebuild_discovers_suppressed_pane_as_hidden() {
-        // A pane discovered while suppressed is recorded as not visible.
-        let mut s = State::default();
-        s.managed_panes = vec!["broot".to_string()];
-        s.own_tab_index = Some(0);
-
-        s.rebuild_pane_map(make_manifest(vec![make_suppressed_pane(42, "broot")]));
-
-        assert_eq!(s.pane_map.get("broot"), Some(&PaneId::Terminal(42)));
-        assert_eq!(s.pane_visible.get("broot"), Some(&false));
-    }
-
-    #[test]
-    fn rebuild_updates_visibility_for_existing_pane() {
-        // pane_visible must be refreshed from PaneInfo.is_suppressed on every
-        // PaneUpdate so that external hide actions are picked up.
-        let mut s = state_with_visible_pane("broot", 42);
-
-        // Pane was hidden externally; next PaneUpdate shows it as suppressed.
-        s.rebuild_pane_map(make_manifest(vec![make_suppressed_pane(42, "broot")]));
-
-        assert_eq!(s.pane_visible.get("broot"), Some(&false));
     }
 
     #[test]
@@ -610,17 +447,32 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_removes_closed_pane_and_clears_state() {
+    fn rebuild_removes_closed_pane_and_clears_active() {
         // When a pane disappears from the manifest, its entry must be evicted and
-        // visibility/pin state must be cleared.
-        let mut s = state_with_visible_pane("broot", 42);
-        s.pinned_panes.insert("broot".to_string());
+        // active_pane must be cleared if it was the active pane.
+        let mut s = state_with_active_pane("broot", 42);
 
         s.rebuild_pane_map(make_manifest(vec![]));
 
         assert!(!s.pane_map.contains_key("broot"));
-        assert!(!s.pane_visible.contains_key("broot"));
-        assert!(!s.pinned_panes.contains("broot"));
+        assert_eq!(s.active_pane, None);
+    }
+
+    #[test]
+    fn rebuild_eviction_leaves_other_active_pane_intact() {
+        // Evicting a non-active pane must not clear active_pane.
+        let mut s = State::default();
+        s.managed_panes = vec!["alpha".to_string(), "beta".to_string()];
+        s.pane_map.insert("alpha".to_string(), PaneId::Terminal(10));
+        s.pane_map.insert("beta".to_string(), PaneId::Terminal(20));
+        s.active_pane = Some("beta".to_string());
+        s.own_tab_index = Some(0);
+
+        // alpha disappears, beta stays
+        s.rebuild_pane_map(make_manifest(vec![make_pane(20, false, "beta")]));
+
+        assert!(!s.pane_map.contains_key("alpha"));
+        assert_eq!(s.active_pane, Some("beta".to_string())); // untouched
     }
 
     #[test]
@@ -654,7 +506,6 @@ mod tests {
         s.own_tab_index = Some(0);
         // Pre-populate with a Terminal pane at id=5
         s.pane_map.insert("broot".to_string(), PaneId::Terminal(5));
-        s.pane_visible.insert("broot".to_string(), true);
 
         // Manifest now contains a Plugin pane at id=5 (different kind, same number)
         s.rebuild_pane_map(make_manifest(vec![make_pane(5, true, "something_else")]));
@@ -678,10 +529,6 @@ mod tests {
         // Simulate the pending_target check from update() manually
         let should_process = s.pane_map.contains_key("broot");
         assert!(!should_process, "pane not found — must not process yet");
-
-        // pending_target must still be Some (not consumed)
-        // (In production this check lives in update(); here we verify the invariant)
-        // The pane_map is empty so pending_target should stay.
         assert_eq!(s.pending_target, Some("broot".to_string()));
     }
 
